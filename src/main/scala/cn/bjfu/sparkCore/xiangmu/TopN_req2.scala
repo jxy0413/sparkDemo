@@ -3,9 +3,9 @@ package cn.bjfu.sparkCore.xiangmu
 import scala.collection.mutable.ListBuffer
 
 /**
-  * 需求1：统计热门品类TopN
+  * 需求2：统计热门品类TopN中，活跃用户的topN
   */
-object TopN_req1 {
+object TopN_req2 {
   def main(args: Array[String]): Unit = {
     import org.apache.spark.{SparkConf, SparkContext}
     //1.创建SparkConf并设置App名称
@@ -94,28 +94,57 @@ object TopN_req1 {
     val mapRDD = reduceRdd.map(_._2)
     //reduceRdd.collect().foreach(println)
     //对Rdd中的数据进行排序
-    mapRDD.sortBy(info=>(info.clickCount,info.orderCount,info.payCount),false).take(10).foreach(println)
+    val res = mapRDD.sortBy(info=>(info.clickCount,info.orderCount,info.payCount),false).take(10)
 
+    //=====================需求二=============================
+    //1、获取热门品类的top10的品类id
+    val categoryIdRdd = res.map(_.categoryId)
+    //println(categoryIdRdd.mkString(","))
+    //对原始数据进行过滤
+    //ids可以进行优化
+    val broadcastIds = sc.broadcast(categoryIdRdd)
+    val filterRdd = actionRdd.filter {
+      action => {
+        //只保留点击的行为
+        if (action.click_category_id != -1) {
+          //同时确定是热门平类的点击
+          //集合数据为字符串类型，id是Long类型，需要进行转换
+          broadcastIds.value.contains(action.click_category_id.toString)
+        } else {
+          false
+        }
+      }
+    }
+    //对session的点击数量进行转换
+    val mapRdd1 = filterRdd.map {
+      action => {
+        (action.click_category_id + "_" + action.session_id, 1)
+      }
+    }
+    //mapRdd1.collect().foreach(println)
+    //(11_de45a822-fd78-42df-a80c-ef367c66b64f,1)
+    //(15_d79508b4-66bf-4410-a5bb-f67a8831610f,1)
+    //(19_d79508b4-66bf-4410-a5bb-f67a8831610f,1)
+    //(9_d79508b4-66bf-4410-a5bb-f67a8831610f,1)
+    val reduceRdd1 = mapRdd1.reduceByKey(_+_)
+    val mapRdd2 = reduceRdd1.map {
+      case (categroryAndsession, sum) => {
+        (categroryAndsession.split("_")(0), (categroryAndsession.split("_")(1), sum))
+      }
+    }
+    val groupRdd2 = mapRdd2.groupByKey()
+
+    val resRDD = groupRdd2.mapValues {
+      datas => {
+        datas.toList.sortWith {
+          case (l, r) => {
+            l._2 > r._2
+          }
+        }.take(10)
+      }
+    }
+    resRDD.foreach(println)
     //4.关闭连接
     sc.stop()
   }
 }
-
-case class UserVisitAction(date: String,//用户点击行为的日期
-                           user_id: Long,//用户的ID
-                           session_id: String,//Session的ID
-                           page_id: Long,//某个页面的ID
-                           action_time: String,//动作的时间点
-                           search_keyword: String,//用户搜索的关键词
-                           click_category_id: Long,//某一个商品品类的ID
-                           click_product_id: Long,//某一个商品的ID
-                           order_category_ids: String,//一次订单中所有品类的ID集合
-                           order_product_ids: String,//一次订单中所有商品的ID集合
-                           pay_category_ids: String,//一次支付中所有品类的ID集合
-                           pay_product_ids: String,//一次支付中所有商品的ID集合
-                           city_id: Long)//城市 id
-// 输出结果表
-case class CategoryCountInfo(categoryId: String,//品类id
-                             var clickCount: Long,//点击次数
-                             var orderCount: Long,//订单次数
-                             var payCount: Long)//支付次数
